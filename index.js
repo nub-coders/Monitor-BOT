@@ -40,6 +40,13 @@ const TIMEOUT_THRESHOLD_MS = parseInt(process.env.TIMEOUT_THRESHOLD_MS, 10) || 1
 // Whether to send recovery alerts when a down bot recovers
 const ENABLE_RECOVERY_ALERTS = process.env.ENABLE_RECOVERY_ALERTS !== 'false';
 
+// Automatically detect public web URL (Render provides RENDER_EXTERNAL_URL)
+let detectedPublicUrl = process.env.RENDER_EXTERNAL_URL || process.env.BASE_URL || null;
+
+function getPublicUrl() {
+  return detectedPublicUrl || `http://localhost:${PORT}`;
+}
+
 // Validate critical configuration on startup
 if (!SECRET_TOKEN) {
   console.error('[CRITICAL] SECRET_TOKEN is not defined in environment variables! Exiting...');
@@ -105,11 +112,27 @@ if (TELEGRAM_BOT_TOKEN) {
 
   // Bot command: /start or /help
   bot.command(['start', 'help'], async (ctx) => {
+    const currentUrl = getPublicUrl();
     await ctx.reply(
       '🤖 *Bot A Monitoring Service*\n\n' +
+      `🌐 *Public URL:* \`${currentUrl}\`\n` +
+      `📡 *Heartbeat Ping URL:* \`${currentUrl}/ping\`\n\n` +
       'Available commands:\n' +
-      '• `/status` - View current health status of all monitored bots\n' +
+      '• `/status` - View health status of monitored bots\n' +
+      '• `/url` - Show public heartbeat endpoints\n' +
       '• `/ping` - Check if Bot A is online',
+      { parse_mode: 'Markdown' }
+    );
+  });
+
+  // Bot command: /url
+  bot.command(['url', 'endpoint'], async (ctx) => {
+    const currentUrl = getPublicUrl();
+    await ctx.reply(
+      '🌐 *Bot A Endpoints:*\n\n' +
+      `• *Base URL:* \`${currentUrl}\`\n` +
+      `• *POST Ping:* \`${currentUrl}/ping\`\n` +
+      `• *GET Status:* \`${currentUrl}/status\``,
       { parse_mode: 'Markdown' }
     );
   });
@@ -196,8 +219,16 @@ const app = express();
 // Middleware: parse incoming JSON requests (restricted to 10kb to avoid DoS)
 app.use(express.json({ limit: '10kb' }));
 
-// Security headers middleware
+// Security headers and dynamic public URL detection middleware
 app.use((req, res, next) => {
+  if (!detectedPublicUrl) {
+    const host = req.get('x-forwarded-host') || req.get('host');
+    const proto = req.get('x-forwarded-proto') || req.protocol;
+    if (host && !host.startsWith('localhost') && !host.startsWith('127.0.0.1')) {
+      detectedPublicUrl = `${proto}://${host}`;
+      console.log(`[Auto-Detect] Public URL identified from incoming request: ${detectedPublicUrl}`);
+    }
+  }
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Cache-Control', 'no-store');
@@ -377,10 +408,12 @@ const HOST = (process.env.NODE_ENV === 'test' && process.env.HOST) ? process.env
 function startServer(port = PORT, host = HOST) {
   startHealthCheck();
   server = app.listen(port, host, () => {
+    const url = getPublicUrl();
     console.log(`====================================================`);
     console.log(`🚀 Bot A Monitoring Server listening on ${host}:${port}`);
-    console.log(`   POST http://${host}:${port}/ping`);
-    console.log(`   GET  http://${host}:${port}/status`);
+    console.log(`   Public Web URL: ${url}`);
+    console.log(`   POST ${url}/ping`);
+    console.log(`   GET  ${url}/status`);
     console.log(`====================================================`);
   });
   return server;
