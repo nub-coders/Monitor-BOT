@@ -40,8 +40,15 @@ const TIMEOUT_THRESHOLD_MS = parseInt(process.env.TIMEOUT_THRESHOLD_MS, 10) || 1
 // Whether to send recovery alerts when a down bot recovers
 const ENABLE_RECOVERY_ALERTS = process.env.ENABLE_RECOVERY_ALERTS !== 'false';
 
-// Automatically detect public web URL (Render provides RENDER_EXTERNAL_URL)
-let detectedPublicUrl = process.env.RENDER_EXTERNAL_URL || process.env.BASE_URL || null;
+// Prioritize explicit custom domain or BASE_URL over Render's default *.onrender.com URL
+const explicitCustomDomain = process.env.CUSTOM_DOMAIN || process.env.BASE_URL || null;
+let detectedPublicUrl = explicitCustomDomain || process.env.RENDER_EXTERNAL_URL || null;
+
+if (detectedPublicUrl && !detectedPublicUrl.startsWith('http://') && !detectedPublicUrl.startsWith('https://')) {
+  detectedPublicUrl = `https://${detectedPublicUrl}`;
+}
+
+const hasExplicitDomain = Boolean(explicitCustomDomain);
 
 function getPublicUrl() {
   return detectedPublicUrl || `http://localhost:${PORT}`;
@@ -216,17 +223,25 @@ async function sendTelegramAlert(message) {
 // ==========================================
 const app = express();
 
+app.set('trust proxy', 1);
+
 // Middleware: parse incoming JSON requests (restricted to 10kb to avoid DoS)
 app.use(express.json({ limit: '10kb' }));
 
 // Security headers and dynamic public URL detection middleware
 app.use((req, res, next) => {
-  if (!detectedPublicUrl) {
+  if (!hasExplicitDomain) {
     const host = req.get('x-forwarded-host') || req.get('host');
     const proto = req.get('x-forwarded-proto') || req.protocol;
     if (host && !host.startsWith('localhost') && !host.startsWith('127.0.0.1')) {
-      detectedPublicUrl = `${proto}://${host}`;
-      console.log(`[Auto-Detect] Public URL identified from incoming request: ${detectedPublicUrl}`);
+      const currentHostIsDefault = detectedPublicUrl && detectedPublicUrl.includes('.onrender.com');
+      const incomingIsCustom = !host.includes('.onrender.com');
+
+      // Update URL if none is set yet, or if a custom domain request arrives to upgrade from default *.onrender.com
+      if (!detectedPublicUrl || (currentHostIsDefault && incomingIsCustom)) {
+        detectedPublicUrl = `${proto}://${host}`;
+        console.log(`[Auto-Detect] Public URL updated to custom domain: ${detectedPublicUrl}`);
+      }
     }
   }
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -456,6 +471,7 @@ module.exports = {
   startServer,
   shutdown,
   startHealthCheck,
-  stopHealthCheck
+  stopHealthCheck,
+  getPublicUrl
 };
 

@@ -168,6 +168,22 @@ async function runVerification() {
     assert.strictEqual(targetBot.alertSent, false, 'alertSent should reset to false');
     console.log('✔ Recovery check-in resets outage status and alert flag.');
 
+    // 9. Test Custom Domain Auto-Detection
+    console.log('Testing Custom Domain Auto-Detection via incoming request headers...');
+    const { getPublicUrl } = require('./index');
+    await makeRequest({
+      hostname: '127.0.0.1',
+      port: testPort,
+      path: '/status',
+      method: 'GET',
+      headers: {
+        'x-forwarded-host': 'bots.nubcoders.com',
+        'x-forwarded-proto': 'https'
+      }
+    });
+    assert.strictEqual(getPublicUrl(), 'https://bots.nubcoders.com', 'Public URL should auto-update to custom domain');
+    console.log('✔ Custom domain successfully auto-detected:', getPublicUrl());
+
     console.log('\n🎉 ALL BOT A VERIFICATION TESTS PASSED SUCCESSFULLY! 🎉\n');
   } finally {
     testServer.close();
