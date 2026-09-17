@@ -365,7 +365,8 @@ function stopHealthCheck() {
 // ==========================================
 // 6. Server Initialization & Graceful Shutdown
 // ==========================================
-const HOST = process.env.HOST || '127.0.0.1';
+// Default to 0.0.0.0 for cloud deployments (e.g. Render, Railway, Docker)
+const HOST = process.env.HOST || '0.0.0.0';
 
 function startServer(port = PORT, host = HOST) {
   startHealthCheck();
