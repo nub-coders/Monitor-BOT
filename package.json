@@ -1,0 +1,26 @@
+{
+  "name": "monitor-bot-a",
+  "version": "1.0.0",
+  "description": "Monitoring web server and Telegram alert bot (Bot A)",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test-server.js",
+    "test:ping": "node test-ping.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "monitoring",
+    "healthcheck",
+    "express"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "grammy": "^1.46.0"
+  }
+}
