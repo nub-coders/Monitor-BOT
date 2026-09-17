@@ -95,7 +95,12 @@ if (TELEGRAM_BOT_TOKEN) {
 
   // Global error handler for grammY
   bot.catch((err) => {
-    console.error('[Telegram Error]:', err.message || err);
+    const error = err.error || err;
+    if (error && error.error_code === 409) {
+      console.warn('[Telegram] Polling conflict detected (another instance is shutting down).');
+      return;
+    }
+    console.error('[Telegram Error]:', error.message || error);
   });
 
   // Bot command: /start or /help
@@ -365,8 +370,9 @@ function stopHealthCheck() {
 // ==========================================
 // 6. Server Initialization & Graceful Shutdown
 // ==========================================
-// Default to 0.0.0.0 for cloud deployments (e.g. Render, Railway, Docker)
-const HOST = process.env.HOST || '0.0.0.0';
+// Force 0.0.0.0 for cloud environments (Render, Railway, Docker)
+// Even if HOST=127.0.0.1 was set in environment variables, enforce 0.0.0.0
+const HOST = (process.env.NODE_ENV === 'test' && process.env.HOST) ? process.env.HOST : '0.0.0.0';
 
 function startServer(port = PORT, host = HOST) {
   startHealthCheck();
