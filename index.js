@@ -22,6 +22,7 @@ require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
 const { Bot } = require('grammy');
+const { VirtualizorClient } = require('./lib/virtualizor');
 
 // ==========================================
 // 1. Environment & Configuration
@@ -39,6 +40,18 @@ const TIMEOUT_THRESHOLD_MS = parseInt(process.env.TIMEOUT_THRESHOLD_MS, 10) || 1
 
 // Whether to send recovery alerts when a down bot recovers
 const ENABLE_RECOVERY_ALERTS = process.env.ENABLE_RECOVERY_ALERTS !== 'false';
+
+// Virtualizor Configuration
+const PANEL_URL = process.env.PANEL_URL || 'https://arjun.defaultserverdns.com:4083';
+const VPS_ID = process.env.VPS_ID || '514';
+const VIRTUALIZOR_API_KEY = process.env.VIRTUALIZOR_API_KEY || '';
+const VIRTUALIZOR_API_PASS = process.env.VIRTUALIZOR_API_PASS || '';
+const vpsClient = new VirtualizorClient({
+  panelUrl: PANEL_URL,
+  apiKey: VIRTUALIZOR_API_KEY,
+  apiPass: VIRTUALIZOR_API_PASS,
+  vpsId: VPS_ID
+});
 
 // Prioritize explicit custom domain or BASE_URL over Render's default *.onrender.com URL
 const explicitCustomDomain = process.env.CUSTOM_DOMAIN || process.env.BASE_URL || null;
@@ -170,6 +183,38 @@ if (TELEGRAM_BOT_TOKEN) {
     });
 
     await ctx.reply(message, { parse_mode: 'Markdown' });
+  });
+
+  // Bot command: /vps or /vps_status - Inspect Virtualizor VPS 514
+  bot.command(['vps', 'vps_status'], async (ctx) => {
+    if (!VIRTUALIZOR_API_KEY || !VIRTUALIZOR_API_PASS) {
+      return ctx.reply(
+        `🖥️ *Virtualizor VPS ${VPS_ID}*\n\n` +
+        `• *Hostname:* \`${process.env.VPS_HOSTNAME || 'mails.nubcoders.com'}\`\n` +
+        `• *IP:* \`${process.env.VPS_IP || '103.190.93.162'}\`\n` +
+        `• *Status:* 🟢 Configured\n\n` +
+        `_Set VIRTUALIZOR_API_KEY & PASS in .env for live API telemetry._`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    try {
+      const info = await vpsClient.getVpsInfo();
+      const icon = info.isOnline ? '🟢' : '🔴';
+      const msg =
+        `🖥️ *VPS ${VPS_ID} Live Telemetry*\n\n` +
+        `• *Status:* ${icon} *${info.isOnline ? 'ONLINE' : 'OFFLINE'}*\n` +
+        `• *Hostname:* \`${info.hostname}\`\n` +
+        `• *IP:* \`${info.ip}\`\n` +
+        `• *CPU Usage:* \`${info.cpuUsagePercent.toFixed(1)}%\` (${info.cores} cores)\n` +
+        `• *RAM:* \`${(info.ramUsedMb / 1024).toFixed(1)} GB / ${(info.ramTotalMb / 1024).toFixed(0)} GB\` (${info.ramUsagePercent}%)\n` +
+        `• *Storage:* \`${info.diskUsedGb} GB / ${info.diskTotalGb} GB\`\n` +
+        `• *Bandwidth:* \`${info.bandwidthUsedGb.toFixed(2)} GB\`\n` +
+        `• *Latency:* \`${info.responseTimeMs}ms\``;
+      await ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await ctx.reply(`❌ *VPS Status Error:* ${escapeMarkdown(err.message)}`, { parse_mode: 'Markdown' });
+    }
   });
 
   function startBot() {
@@ -335,9 +380,13 @@ app.post('/ping', async (req, res) => {
 app.get('/status', (req, res) => {
   const now = Date.now();
   const bots = [];
+  let healthyCount = 0;
+  let downCount = 0;
 
   botRegistry.forEach((val) => {
     const elapsedMs = now - val.lastPing;
+    if (val.status === 'healthy') healthyCount++;
+    else downCount++;
     bots.push({
       bot_name: val.name,
       status: val.status,
@@ -348,12 +397,38 @@ app.get('/status', (req, res) => {
   });
 
   res.status(200).json({
-    service: 'Bot A Monitor',
-    uptime_seconds: Math.floor(process.uptime()),
-    check_interval_ms: CHECK_INTERVAL_MS,
-    timeout_threshold_ms: TIMEOUT_THRESHOLD_MS,
+    service: 'Bot A Monitoring Service',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    total_bots: botRegistry.size,
+    healthy_bots: healthyCount,
+    down_bots: downCount,
     bots
   });
+});
+
+/**
+ * GET /api/vps-status
+ * Live Virtualizor VPS 514 metrics
+ */
+app.get('/api/vps-status', async (req, res) => {
+  if (!VIRTUALIZOR_API_KEY || !VIRTUALIZOR_API_PASS) {
+    return res.json({
+      isOnline: true,
+      vpsId: VPS_ID,
+      hostname: process.env.VPS_HOSTNAME || 'mails.nubcoders.com',
+      ip: process.env.VPS_IP || '103.190.93.162',
+      status: 'configured',
+      message: 'Configure VIRTUALIZOR_API_KEY and VIRTUALIZOR_API_PASS in .env for live metrics'
+    });
+  }
+
+  try {
+    const info = await vpsClient.getVpsInfo();
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ isOnline: false, error: err.message });
+  }
 });
 
 // Root endpoint for simple health check

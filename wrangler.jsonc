@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "monitor-bot",
+  "main": "src/worker.js",
+  "compatibility_date": "2024-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "monitor-db",
+      "database_id": "1d6d02e9-d6b0-46fe-adf8-3f48990fbc87"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "VIRTUALIZOR_MONITOR_KV",
+      "id": "e3866486ab1b46e4ae180c08a3fe6702"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "vars": {
+    "TIMEOUT_THRESHOLD_MS": "600000",
+    "ENABLE_RECOVERY_ALERTS": "true",
+    "EXPECTED_BOTS": "Bot B,Bot C,Bot D",
+    "PANEL_URL": "https://arjun.defaultserverdns.com:4083",
+    "VPS_ID": "514",
+    "VPS_HOSTNAME": "mails.nubcoders.com",
+    "VPS_IP": "103.190.93.162",
+    "ALERT_COOLDOWN_MINUTES": "15",
+    "CPU_THRESHOLD_PERCENT": "90",
+    "RAM_THRESHOLD_PERCENT": "95"
+  }
+}

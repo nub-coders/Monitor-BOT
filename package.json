@@ -7,7 +7,13 @@
   "scripts": {
     "start": "node index.js",
     "test": "node test-server.js",
-    "test:ping": "node test-ping.js"
+    "test:ping": "node test-ping.js",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create monitor-db",
+    "db:migrate:local": "wrangler d1 execute monitor-db --local --file=schema.sql",
+    "db:migrate:remote": "wrangler d1 execute monitor-db --remote --file=schema.sql",
+    "bot:setup": "node scripts/setup-bot-profile.js"
   },
   "keywords": [
     "telegram",
@@ -22,5 +28,8 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "grammy": "^1.46.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.133.0"
   }
 }

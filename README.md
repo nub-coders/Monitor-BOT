@@ -6,24 +6,35 @@ A lightweight, production-ready Node.js backend service that monitors the health
 
 ## 📋 Features
 
-- ⚡ **Express Heartbeat Endpoint (`POST /ping`)**:
-  - Receives JSON payload with `bot_name` and `secret_token`.
-  - Secure constant-time authentication using `crypto.timingSafeEqual` (prevents timing side-channel attacks).
-  - Updates in-memory heartbeat timestamps and clears active outage states.
-- ⏱️ **Background Health Check Loop**:
-  - Automatically runs every **1 minute** via `setInterval`.
-  - Flags any bot that has not checked in within **10 minutes**.
-  - Sends a Telegram alert to your chat ID.
-  - **Deduplication guard**: Sends only **one** alert per outage to avoid flooding your Telegram chat.
-  - **Recovery notification**: Automatically dispatches a "Recovered" alert when a previously down bot pings again.
-- 📱 **Interactive Telegram Bot**:
-  - Sends immediate notifications on downtime and recovery.
-  - Interactive commands:
-    - `/status` — View real-time health status of all monitored bots.
-    - `/ping` — Verify Bot A is alive.
-    - `/help` — Display command guide.
-- 📊 **Monitoring API (`GET /status`)**:
-  - Real-time JSON health dashboard for external status pages or uptime monitoring.
+- 🛰️ **Multi-User Dynamic Service Registration**:
+  - Add services interactively directly in Telegram via `/newservice`.
+  - The bot prompts for **Service Name** and **Service Description**.
+  - Generates a **Unique Secret Token** (`sec_...`) per service. No static shared secret token!
+- 🔄 **3-State Health Lifecycle**:
+  - 🟡 **`initialized`**: Newly registered, awaiting first heartbeat (*no false down alerts*).
+  - 🟢 **`up`**: Active and reporting regular heartbeats.
+  - 🔴 **`down`**: Inactivity exceeded timeout threshold (10 minutes).
+- 🌍 **Custom Timezone Support**:
+  - Configure your preferred timezone via `/settimezone <IANA Timezone>` (e.g. `Asia/Kolkata`, `UTC`).
+  - All dashboard and alert timestamps are formatted according to your chosen timezone.
+- 📢 **Pinned Channel Live Status Board**:
+  - Link a public/private channel via `/setchannel <@channel or ID>`.
+  - Automatically posts and pins a comprehensive status board.
+  - **Change-Only Rule**: Message is **edited only when a service changes status** or is added/removed.
+- 👥 **Group Alert Broadcasts**:
+  - Link an alert group via `/setgroup` (executed inside the group).
+  - Always posts a new alert message on outage and recovery events.
+- 📱 **Direct User Alerts**:
+  - Outage and recovery alerts are always sent directly to the creator's private Telegram DM.
+- 🖥️ **Virtualizor VPS 514 Infrastructure Monitoring**:
+  - Live power status, CPU usage %, RAM usage %, disk storage, bandwidth, and API latency.
+  - Automated 1-minute cron polling on Cloudflare Workers edge.
+  - Outage & recovery alerts dispatched to Telegram DM and linked groups.
+  - Interactive bot controls: `/vps`, `/vps_specs`, `/start_vps`, `/restart_vps`, `/stop_vps` and `VPS 514 Live` menu button.
+  - Real-time dark-mode glassmorphic Web UI at `/vps` and `/dashboard`.
+- ⚡ **Cloudflare Workers, D1 & KV Architecture**:
+  - Zero-maintenance serverless edge hosting with Cloudflare D1 (SQLite), KV (`VIRTUALIZOR_MONITOR_KV`), and 1-minute Cron Triggers.
+  - Live Deployment: **[https://monitor-bot.nubcoders.workers.dev](https://monitor-bot.nubcoders.workers.dev)**
 
 ---
 
@@ -298,9 +309,53 @@ while True:
 
 ---
 
-## 🛡️ Production Deployment Recommendations
+## 🛡️ Production Deployment Options
 
-1. **Process Manager**: Use [PM2](https://pm2.keymetrics.io/) to keep Bot A running continuously and restart upon failure:
+### Option 1: Cloudflare Workers (Serverless & Free Tier)
+
+Deploy Bot A globally on **Cloudflare Workers** with **Cloudflare D1** (Serverless SQLite) and **Cron Triggers**:
+
+1. **Log in to Cloudflare**:
+   ```bash
+   npx wrangler login
+   ```
+
+2. **Create your Cloudflare D1 Database**:
+   ```bash
+   npm run db:create
+   ```
+   *Copy the returned `database_id` and paste it into [`wrangler.jsonc`](wrangler.jsonc) under `d1_databases[0].database_id`.*
+
+3. **Initialize the remote database schema**:
+   ```bash
+   npm run db:migrate:remote
+   ```
+
+4. **Set Production Secrets on Cloudflare**:
+   ```bash
+   npx wrangler secret put SECRET_TOKEN
+   npx wrangler secret put TELEGRAM_BOT_TOKEN
+   npx wrangler secret put MY_CHAT_ID
+   ```
+
+5. **Deploy the Worker**:
+   ```bash
+   npm run worker:deploy
+   ```
+
+6. **Connect your Telegram Webhook**:
+   ```bash
+   curl -F "url=https://<your-worker-subdomain>.workers.dev/webhook" \
+     https://api.telegram.org/bot<YOUR_TELEGRAM_BOT_TOKEN>/setWebhook
+   ```
+
+*(For local testing with Wrangler, run `npm run worker:dev` and `node test-worker.js`)*
+
+---
+
+### Option 2: Traditional Server / VPS / PM2
+
+1. **Process Manager**: Use [PM2](https://pm2.keymetrics.io/) to keep Bot A running continuously:
    ```bash
    npm install -g pm2
    pm2 start index.js --name "bot-a-monitor"
@@ -308,3 +363,4 @@ while True:
    pm2 startup
    ```
 2. **Reverse Proxy & HTTPS**: If deploying on a VPS or public server, place Bot A behind Nginx or Caddy with SSL/TLS encryption.
+
