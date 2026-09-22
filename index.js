@@ -43,8 +43,7 @@ const ENABLE_RECOVERY_ALERTS = process.env.ENABLE_RECOVERY_ALERTS !== 'false';
 
 // VPS Auto-restart configuration
 const ENABLE_VPS_AUTO_START = process.env.ENABLE_VPS_AUTO_START === 'true';
-const VPS_OFFLINE_THRESHOLD = parseInt(process.env.VPS_OFFLINE_THRESHOLD, 10) || 3;
-const VPS_RESTART_DELAY_MS = parseInt(process.env.VPS_RESTART_DELAY_MS, 10) || 60 * 1000; // 1 minute
+const VPS_MAX_RESTART_ATTEMPTS = parseInt(process.env.VPS_MAX_RESTART_ATTEMPTS, 10) || 3;
 
 // Virtualizor Configuration
 const PANEL_URL = process.env.PANEL_URL || 'https://arjun.defaultserverdns.com:4083';
@@ -103,9 +102,8 @@ const botRegistry = new Map();
 // ==========================================
 // VPS Auto-Restart State
 // ==========================================
-let vpsOfflineCount = 0;
-let vpsLastOfflineTime = null;
-let vpsRestartInFlight = false;
+let vpsRestartAttempts = 0;   // How many restart attempts have been made this outage
+let vpsGaveUp = false;         // True after maxAttempts exhausted — stop retrying
 
 // Pre-populate expected bots if provided in .env (e.g. "Bot B,Bot C,Bot D")
 const expectedBotsEnv = process.env.EXPECTED_BOTS || 'Bot B,Bot C,Bot D';
@@ -525,51 +523,41 @@ async function checkBotsHealth() {
   });
 
   // VPS Auto-Restart Logic
-  if (ENABLE_VPS_AUTO_START && VIRTUALIZOR_API_KEY && VIRTUALIZOR_API_PASS && !vpsRestartInFlight) {
+  if (ENABLE_VPS_AUTO_START && VIRTUALIZOR_API_KEY && VIRTUALIZOR_API_PASS) {
     try {
       const vpsStatus = await vpsClient.getStatus();
-      
+
       if (!vpsStatus.isOnline) {
-        // VPS is offline
-        vpsOfflineCount++;
-        vpsLastOfflineTime = now;
-        
-        console.log(`[VPS Monitor] VPS ${VPS_ID} is offline. Count: ${vpsOfflineCount}/${VPS_OFFLINE_THRESHOLD}`);
-        
-        // Send alert on first detection
-        if (vpsOfflineCount === 1) {
-          const alertMessage =
-            `🖥️ *[ALERT] VPS ${VPS_ID} is OFFLINE*\n\n` +
-            `⏱️ *Detected:* \`${new Date(now).toUTCString()}\`\n` +
-            `📊 *Consecutive Checks:* ${vpsOfflineCount}/${VPS_OFFLINE_THRESHOLD}\n\n` +
-            `_Auto-restart will trigger after ${VPS_OFFLINE_THRESHOLD} offline checks if not started._`;
-          sendTelegramAlert(alertMessage);
-        }
-        
-        // Check if we should trigger auto-restart
-        if (vpsOfflineCount >= VPS_OFFLINE_THRESHOLD) {
-          const timeSinceOffline = now - (vpsLastOfflineTime || now);
-          
-          if (timeSinceOffline >= VPS_RESTART_DELAY_MS) {
-            console.log(`[VPS Monitor] Triggering auto-restart for VPS ${VPS_ID} (offline for ${Math.round(timeSinceOffline / 60000)} minutes)`);
-            await triggerVPSAutoRestart();
-          } else {
-            console.log(`[VPS Monitor] Waiting ${Math.round((VPS_RESTART_DELAY_MS - timeSinceOffline) / 1000)}s before auto-restart...`);
+        if (vpsGaveUp) {
+          // Already exhausted all attempts — stay silent
+          console.log(`[VPS Monitor] VPS ${VPS_ID} still offline. Max attempts reached. Waiting for manual fix.`);
+        } else if (vpsRestartAttempts < VPS_MAX_RESTART_ATTEMPTS) {
+          vpsRestartAttempts++;
+          console.log(`[VPS Monitor] VPS ${VPS_ID} offline — restart attempt ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS}`);
+          await triggerVPSAutoRestart();
+
+          if (vpsRestartAttempts >= VPS_MAX_RESTART_ATTEMPTS) {
+            vpsGaveUp = true;
+            console.log(`[VPS Monitor] VPS ${VPS_ID} — max restart attempts (${VPS_MAX_RESTART_ATTEMPTS}) reached. Giving up.`);
+            sendTelegramAlert(
+              `🔴 *VPS ${VPS_ID} — Max Restart Attempts Reached*\n\n` +
+              `📊 *Attempts Made:* ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS}\n\n` +
+              `_VPS did not recover. Manual intervention required. Check the Virtualizor panel._`
+            );
           }
         }
       } else {
-        // VPS is online - reset counter
-        if (vpsOfflineCount > 0) {
-          console.log(`[VPS Monitor] VPS ${VPS_ID} is back online. Resetting offline counter.`);
-          const recoveryMsg =
+        // VPS is online — reset retry state
+        if (vpsRestartAttempts > 0 || vpsGaveUp) {
+          console.log(`[VPS Monitor] VPS ${VPS_ID} is back online. Resetting restart state.`);
+          sendTelegramAlert(
             `✅ *[RECOVERY]* VPS ${VPS_ID} is back ONLINE!\n\n` +
             `🕒 *Timestamp:* \`${new Date(now).toUTCString()}\`\n` +
-            `📊 *Previous Offline Count:* ${vpsOfflineCount}`;
-          sendTelegramAlert(recoveryMsg);
+            `📊 *Restart Attempts Used:* ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS}`
+          );
         }
-        vpsOfflineCount = 0;
-        vpsLastOfflineTime = null;
-        vpsRestartInFlight = false;
+        vpsRestartAttempts = 0;
+        vpsGaveUp = false;
       }
     } catch (err) {
       console.error(`[VPS Monitor] Error checking VPS status:`, err.message);
@@ -578,47 +566,28 @@ async function checkBotsHealth() {
 }
 
 async function triggerVPSAutoRestart() {
-  if (vpsRestartInFlight) return;
-  
-  vpsRestartInFlight = true;
-  console.log(`[VPS Monitor] Initiating auto-restart for VPS ${VPS_ID}...`);
-  
-  const restartMessage =
-    `🔄 *[AUTO-RESTART]* VPS ${VPS_ID}\n\n` +
-    `⏱️ *Triggered:* \`${new Date().toUTCString()}\`\n` +
-    `📊 *Reason:* Offline for ${vpsOfflineCount} consecutive checks\n\n` +
-    `_Attempting restart via Virtualizor API..._`;
-  
-  await sendTelegramAlert(restartMessage);
-  
+  console.log(`[VPS Monitor] Initiating restart attempt ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS} for VPS ${VPS_ID}...`);
+
+  sendTelegramAlert(
+    `🔄 *[AUTO-RESTART]* VPS ${VPS_ID} — Attempt ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS}\n\n` +
+    `⏱️ *Triggered:* \`${new Date().toUTCString()}\`\n\n` +
+    `_Attempting restart via Virtualizor API..._`
+  );
+
   try {
-    const result = await vpsClient.restart();
-    
-    if (result?.status === 'success' || result?.data?.vpsid === VPS_ID) {
-      console.log(`[VPS Monitor] Auto-restart command sent successfully for VPS ${VPS_ID}`);
-      const successMsg =
-        `✅ *VPS ${VPS_ID} Restart Initiated*\n\n` +
-        `🕒 *Time:* \`${new Date().toUTCString()}\`\n\n` +
-        `_The VPS should boot up in a few minutes. Use /vps to check status._`;
-      await sendTelegramAlert(successMsg);
-    } else {
-      throw new Error(`Unexpected response: ${JSON.stringify(result)}`);
-    }
+    await vpsClient.restart();
+    console.log(`[VPS Monitor] Restart command sent for VPS ${VPS_ID} (attempt ${vpsRestartAttempts})`);
+    sendTelegramAlert(
+      `✅ *VPS ${VPS_ID} Restart Dispatched (Attempt ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS})*\n\n` +
+      `🕒 *Time:* \`${new Date().toUTCString()}\`\n\n` +
+      `_Use /vps in a few minutes to check if it recovered._`
+    );
   } catch (err) {
-    console.error(`[VPS Monitor] Auto-restart failed:`, err.message);
-    const errMsg =
-      `❌ *VPS ${VPS_ID} Auto-Restart Failed*\n\n` +
-      `⏱️ *Time:* \`${new Date().toUTCString()}\`\n` +
-      `❌ *Error:* ${escapeMarkdown(err.message)}\n\n` +
-      `_Please check the Virtualizor panel manually._`;
-    await sendTelegramAlert(errMsg);
-  } finally {
-    // Reset after delay to allow restart to complete
-    setTimeout(() => {
-      vpsRestartInFlight = false;
-      vpsOfflineCount = 0;
-      vpsLastOfflineTime = null;
-    }, VPS_RESTART_DELAY_MS * 2);
+    console.error(`[VPS Monitor] Restart attempt ${vpsRestartAttempts} failed:`, err.message);
+    sendTelegramAlert(
+      `❌ *VPS ${VPS_ID} Restart Failed (Attempt ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS})*\n\n` +
+      `❌ *Error:* ${escapeMarkdown(err.message)}`
+    );
   }
 }
 

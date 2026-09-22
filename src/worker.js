@@ -2174,10 +2174,9 @@ async function runVirtualizorCheck(env) {
 
   const now = Date.now();
   const cooldownMs = (parseInt(env.ALERT_COOLDOWN_MINUTES, 10) || 15) * 60 * 1000;
-  const offlineThreshold = parseInt(env.VPS_OFFLINE_THRESHOLD, 10) || 3;
-  const restartDelayMs = parseInt(env.VPS_RESTART_DELAY_MS, 10) || 60 * 1000; // 1 minute
+  const maxRestartAttempts = parseInt(env.VPS_MAX_RESTART_ATTEMPTS, 10) || 3;
 
-  let state = { lastStatus: 'unknown', lastAlertTime: 0, offlineCount: 0, lastOfflineTime: 0, restartInFlight: false };
+  let state = { lastStatus: 'unknown', lastAlertTime: 0, restartAttempts: 0, gaveUp: false };
   if (env.VIRTUALIZOR_MONITOR_KV) {
     try {
       const saved = await env.VIRTUALIZOR_MONITOR_KV.get('vps_state', 'json');
@@ -2222,101 +2221,86 @@ async function runVirtualizorCheck(env) {
     state.manual_stop_by = null;
   }
 
-  // State Transition: ONLINE -> OFFLINE
-  if (!info.isOnline && prevStatus !== 'offline') {
-    const timeSinceAlert = now - (state.lastAlertTime || 0);
-    if (timeSinceAlert > cooldownMs || prevStatus === 'online') {
-      state.lastAlertTime = now;
-      state.offlineCount = 1;
-      state.lastOfflineTime = now;
+  // VPS is OFFLINE
+  if (!info.isOnline) {
+    if (autoRestart && !state.manual_stop) {
+      if (state.gaveUp) {
+        // Already exhausted all attempts — stay silent until manual recovery
+        console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} still offline. Max restart attempts already reached. Waiting for manual fix.`);
+      } else if (state.restartAttempts < maxRestartAttempts) {
+        // Attempt restart
+        state.restartAttempts = (state.restartAttempts || 0) + 1;
+        console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} offline — restart attempt ${state.restartAttempts}/${maxRestartAttempts}`);
 
-      // Check if auto-restart should trigger
-      if (autoRestart && !state.manual_stop && !state.restartInFlight) {
-        // Increment offline count
-        state.offlineCount++;
-        console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} offline count: ${state.offlineCount}/${offlineThreshold}`);
-
-        // Send initial alert
-        const alertMsg =
-          `<h2>${tgEmoji('ALERT')} ${tgEmoji('WARNING')} VPS ${env.VPS_ID || '514'} Offline Alert</h2>\n` +
+        const attemptMsg =
+          `<h2>${tgEmoji('ALERT')} ${tgEmoji('LIGHTNING')} VPS ${env.VPS_ID || '514'} Offline — Restart Attempt ${state.restartAttempts}/${maxRestartAttempts}</h2>\n` +
           `<blockquote>\n` +
-          `${tgEmoji('SERVER')} <b>VPS ID:</b> <code>${info.vpsId}</code>\n` +
-          `${tgEmoji('GLOBE')} <b>Hostname:</b> <code>${escapeHtml(info.hostname)}</code>\n` +
+          `${tgEmoji('SERVER')} <b>VPS ID:</b> <code>${info.vpsId}</code> (${escapeHtml(info.hostname)})\n` +
           `${tgEmoji('SERVER')} <b>IP:</b> <code>${escapeHtml(info.ip)}</code>\n` +
-          `${tgEmoji('ALERT')} <b>Status:</b> <b>OFFLINE / UNREACHABLE</b>\n` +
           `${tgEmoji('WARNING')} <b>Error:</b> <i>${escapeHtml(info.error || 'Server power state 0')}</i>\n` +
-          `${tgEmoji('CLOCK')} <b>Consecutive Checks:</b> ${state.offlineCount}/${offlineThreshold}\n` +
-          `</blockquote>` +
-          (state.manual_stop
-            ? `\n<i>(Intentional shutdown detected via ${state.manual_stop_by ? 'Web Panel (' + escapeHtml(state.manual_stop_by) + ')' : 'admin command'} — auto-restart suppressed)</i>`
-            : state.offlineCount >= offlineThreshold
-              ? `\n<i>Auto-restart will trigger in 1 minute if still offline.</i>`
-              : `\n<i>Monitoring... will auto-restart after ${offlineThreshold} checks.</i>`
-          );
+          `${tgEmoji('LIGHTNING')} <b>Action:</b> Dispatching restart to Virtualizor...\n` +
+          `${tgEmoji('CLOCK')} <b>Attempt:</b> ${state.restartAttempts} of ${maxRestartAttempts}\n` +
+          `</blockquote>\n\n` +
+          `<i>Next status check will confirm if the server recovered.</i>`;
 
-        if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
-          await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID, alertMsg);
-        }
-
-        // Check if we should trigger auto-restart (3 checks + 1 minute delay)
-        if (state.offlineCount >= offlineThreshold) {
-          const timeSinceOffline = now - (state.lastOfflineTime || now);
-          if (timeSinceOffline >= restartDelayMs) {
-            console.log(`[VPS Monitor] Triggering auto-restart for VPS ${env.VPS_ID || '514'}`);
-            state.restartInFlight = true;
-            
-            try {
-              await client.restart();
-              
-              const autoMsg =
-                `<h2>${tgEmoji('ALERT')} ${tgEmoji('LIGHTNING')} VPS ${env.VPS_ID || '514'} Offline — Auto-Restart Dispatched!</h2>\n` +
-                `<blockquote>\n` +
-                `${tgEmoji('SERVER')} <b>VPS ID:</b> <code>${info.vpsId}</code> (${escapeHtml(info.hostname)})\n` +
-                `${tgEmoji('SERVER')} <b>IP:</b> <code>${escapeHtml(info.ip)}</code>\n` +
-                `${tgEmoji('WARNING')} <b>Event:</b> VPS went offline unexpectedly\n` +
-                `${tgEmoji('LIGHTNING')} <b>Self-Healing Action:</b> 🟢 <b>Restart Dispatched to Virtualizor</b>\n` +
-                `${tgEmoji('CLOCK')} <b>Triggered After:</b> ${state.offlineCount} checks + 1 minute delay\n` +
-                `</blockquote>\n\n` +
-                `<i>Virtualizor is rebooting the server. Recheck live status with /vps in 2 minutes.</i>`;
-
-              if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
-                await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID, autoMsg);
-              }
-            } catch (e) {
-              console.warn('[Auto-Restart Error]:', e.message);
-              state.restartInFlight = false;
-            }
-          } else {
-            console.log(`[VPS Monitor] Waiting ${Math.round((restartDelayMs - timeSinceOffline) / 1000)}s before auto-restart...`);
+        try {
+          await client.restart();
+          if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
+            await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID, attemptMsg);
+          }
+        } catch (e) {
+          console.warn(`[VPS Monitor] Restart attempt ${state.restartAttempts} failed:`, e.message);
+          if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
+            await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID,
+              `<h2>${tgEmoji('WARNING')} VPS ${env.VPS_ID || '514'} — Restart Attempt ${state.restartAttempts} Failed</h2>\n` +
+              `<blockquote>${tgEmoji('WARNING')} <b>Error:</b> <i>${escapeHtml(e.message)}</i></blockquote>`);
           }
         }
-      } else if (!autoRestart) {
-        const manualNote = state.manual_stop
-          ? `\n<i>(Intentional shutdown detected via ${state.manual_stop_by ? 'Web Panel (' + escapeHtml(state.manual_stop_by) + ')' : 'admin command'} — auto-restart suppressed)</i>`
-          : `\n<i>Use /vps to inspect or /start_vps to power on.</i>`;
 
-        const alertMsg =
-          `<h2>${tgEmoji('ALERT')} ${tgEmoji('WARNING')} VPS ${env.VPS_ID || '514'} Offline Alert</h2>\n` +
-          `<blockquote>\n` +
-          `${tgEmoji('SERVER')} <b>VPS ID:</b> <code>${info.vpsId}</code>\n` +
-          `${tgEmoji('GLOBE')} <b>Hostname:</b> <code>${escapeHtml(info.hostname)}</code>\n` +
-          `${tgEmoji('SERVER')} <b>IP:</b> <code>${escapeHtml(info.ip)}</code>\n` +
-          `${tgEmoji('ALERT')} <b>Status:</b> <b>OFFLINE / UNREACHABLE</b>\n` +
-          `${tgEmoji('WARNING')} <b>Error:</b> <i>${escapeHtml(info.error || 'Server power state 0')}</i>\n` +
-          `</blockquote>` +
-          manualNote;
-
-        if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
-          await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID, alertMsg);
+        // If this was the last attempt, set gaveUp flag
+        if (state.restartAttempts >= maxRestartAttempts) {
+          state.gaveUp = true;
+          console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} — max restart attempts (${maxRestartAttempts}) reached. Giving up.`);
+          const giveUpMsg =
+            `<h2>${tgEmoji('ALERT')} VPS ${env.VPS_ID || '514'} — Max Restart Attempts Reached</h2>\n` +
+            `<blockquote>\n` +
+            `${tgEmoji('SERVER')} <b>VPS:</b> <code>${info.vpsId}</code> (${escapeHtml(info.hostname)})\n` +
+            `${tgEmoji('WARNING')} <b>Attempts Made:</b> ${state.restartAttempts}/${maxRestartAttempts}\n` +
+            `${tgEmoji('ALERT')} <b>Result:</b> VPS did not recover after all restart attempts\n` +
+            `</blockquote>\n\n` +
+            `<b>⚠️ Manual intervention required.</b> Check the Virtualizor panel directly.`;
+          if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
+            await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID, giveUpMsg);
+          }
         }
+      }
+    } else if (!autoRestart && prevStatus !== 'offline') {
+      // Auto-restart disabled — alert once on first offline detection
+      const manualNote = state.manual_stop
+        ? `\n<i>(Intentional shutdown via ${state.manual_stop_by ? 'Web Panel (' + escapeHtml(state.manual_stop_by) + ')' : 'admin command'} — auto-restart suppressed)</i>`
+        : `\n<i>Use /vps to inspect or /start_vps to power on.</i>`;
+
+      const alertMsg =
+        `<h2>${tgEmoji('ALERT')} ${tgEmoji('WARNING')} VPS ${env.VPS_ID || '514'} Offline Alert</h2>\n` +
+        `<blockquote>\n` +
+        `${tgEmoji('SERVER')} <b>VPS ID:</b> <code>${info.vpsId}</code>\n` +
+        `${tgEmoji('GLOBE')} <b>Hostname:</b> <code>${escapeHtml(info.hostname)}</code>\n` +
+        `${tgEmoji('SERVER')} <b>IP:</b> <code>${escapeHtml(info.ip)}</code>\n` +
+        `${tgEmoji('ALERT')} <b>Status:</b> <b>OFFLINE / UNREACHABLE</b>\n` +
+        `${tgEmoji('WARNING')} <b>Error:</b> <i>${escapeHtml(info.error || 'Server power state 0')}</i>\n` +
+        `</blockquote>` +
+        manualNote;
+
+      if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
+        await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID, alertMsg);
       }
     }
   } else if (info.isOnline && prevStatus === 'offline') {
     // State Transition: OFFLINE -> ONLINE (Recovery)
     state.manual_stop = false;
-    state.offlineCount = 0;
-    state.lastOfflineTime = 0;
-    state.restartInFlight = false;
+    state.manual_stop_by = null;
+    state.restartAttempts = 0;
+    state.gaveUp = false;
     const recMsg =
       `<h2>${tgEmoji('RECOVERY')} ${tgEmoji('LIGHTNING')} VPS ${env.VPS_ID || '514'} Restored Online</h2>\n` +
       `<blockquote>\n` +
