@@ -23,6 +23,7 @@
   "vars": {
     "TIMEOUT_THRESHOLD_MS": "600000",
     "ENABLE_RECOVERY_ALERTS": "true",
+    "AUTO_RESTART_ON_FAILURE": "true",
     "EXPECTED_BOTS": "Bot B,Bot C,Bot D",
     "PANEL_URL": "https://arjun.defaultserverdns.com:4083",
     "VPS_ID": "514",
@@ -30,6 +31,8 @@
     "VPS_IP": "103.190.93.162",
     "ALERT_COOLDOWN_MINUTES": "15",
     "CPU_THRESHOLD_PERCENT": "90",
-    "RAM_THRESHOLD_PERCENT": "95"
+    "RAM_THRESHOLD_PERCENT": "95",
+    "VPS_OFFLINE_THRESHOLD": "3",
+    "VPS_RESTART_DELAY_MS": "60000"
   }
 }

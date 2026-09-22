@@ -41,6 +41,11 @@ const TIMEOUT_THRESHOLD_MS = parseInt(process.env.TIMEOUT_THRESHOLD_MS, 10) || 1
 // Whether to send recovery alerts when a down bot recovers
 const ENABLE_RECOVERY_ALERTS = process.env.ENABLE_RECOVERY_ALERTS !== 'false';
 
+// VPS Auto-restart configuration
+const ENABLE_VPS_AUTO_START = process.env.ENABLE_VPS_AUTO_START === 'true';
+const VPS_OFFLINE_THRESHOLD = parseInt(process.env.VPS_OFFLINE_THRESHOLD, 10) || 3;
+const VPS_RESTART_DELAY_MS = parseInt(process.env.VPS_RESTART_DELAY_MS, 10) || 60 * 1000; // 1 minute
+
 // Virtualizor Configuration
 const PANEL_URL = process.env.PANEL_URL || 'https://arjun.defaultserverdns.com:4083';
 const VPS_ID = process.env.VPS_ID || '514';
@@ -95,6 +100,13 @@ if (!MY_CHAT_ID) {
  */
 const botRegistry = new Map();
 
+// ==========================================
+// VPS Auto-Restart State
+// ==========================================
+let vpsOfflineCount = 0;
+let vpsLastOfflineTime = null;
+let vpsRestartInFlight = false;
+
 // Pre-populate expected bots if provided in .env (e.g. "Bot B,Bot C,Bot D")
 const expectedBotsEnv = process.env.EXPECTED_BOTS || 'Bot B,Bot C,Bot D';
 if (expectedBotsEnv) {
@@ -139,6 +151,7 @@ if (TELEGRAM_BOT_TOKEN) {
       `📡 *Heartbeat Ping URL:* \`${currentUrl}/ping\`\n\n` +
       'Available commands:\n' +
       '• `/status` - View health status of monitored bots\n' +
+      '• `/vps` - Check VPS status and telemetry\n' +
       '• `/url` - Show public heartbeat endpoints\n' +
       '• `/ping` - Check if Bot A is online',
       { parse_mode: 'Markdown' }
@@ -201,6 +214,7 @@ if (TELEGRAM_BOT_TOKEN) {
     try {
       const info = await vpsClient.getVpsInfo();
       const icon = info.isOnline ? '🟢' : '🔴';
+      const autoStartStatus = ENABLE_VPS_AUTO_START ? '✅ Enabled' : '❌ Disabled';
       const msg =
         `🖥️ *VPS ${VPS_ID} Live Telemetry*\n\n` +
         `• *Status:* ${icon} *${info.isOnline ? 'ONLINE' : 'OFFLINE'}*\n` +
@@ -210,10 +224,51 @@ if (TELEGRAM_BOT_TOKEN) {
         `• *RAM:* \`${(info.ramUsedMb / 1024).toFixed(1)} GB / ${(info.ramTotalMb / 1024).toFixed(0)} GB\` (${info.ramUsagePercent}%)\n` +
         `• *Storage:* \`${info.diskUsedGb} GB / ${info.diskTotalGb} GB\`\n` +
         `• *Bandwidth:* \`${info.bandwidthUsedGb.toFixed(2)} GB\`\n` +
-        `• *Latency:* \`${info.responseTimeMs}ms\``;
+        `• *Latency:* \`${info.responseTimeMs}ms\`\n\n` +
+        `_Auto-start: ${autoStartStatus}_`;
       await ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (err) {
       await ctx.reply(`❌ *VPS Status Error:* ${escapeMarkdown(err.message)}`, { parse_mode: 'Markdown' });
+    }
+  });
+
+  // Bot command: /start_vps - Manually trigger VPS power-on
+  bot.command('start_vps', async (ctx) => {
+    if (!VIRTUALIZOR_API_KEY || !VIRTUALIZOR_API_PASS) {
+      return ctx.reply(
+        `⚠️ *VPS Control Unavailable*\n\n` +
+        `_Set VIRTUALIZOR_API_KEY & VIRTUALIZOR_API_PASS in .env to enable VPS management._`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    try {
+      await ctx.reply(
+        `⏳ *Starting VPS ${VPS_ID}*...\n\n` +
+        `Please wait a moment for the power-on command to be processed.`,
+        { parse_mode: 'Markdown' }
+      );
+
+      const result = await vpsClient.start();
+
+      if (result?.data?.vpsid === VPS_ID || result?.status === 'success') {
+        await ctx.reply(
+          `✅ *VPS ${VPS_ID} Start Initiated*\n\n` +
+          `The power-on command was sent successfully.\n` +
+          `🕒 *Time:* \`${new Date().toUTCString()}\`\n\n` +
+          `💡 *Note:* The VPS may take a few minutes to boot up. Use /vps to check status.`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        throw new Error(`Unexpected response: ${JSON.stringify(result?.data || result)}`);
+      }
+    } catch (err) {
+      await ctx.reply(
+        `❌ *VPS Start Failed*\n\n` +
+        `Error: ${escapeMarkdown(err.message)}\n\n` +
+        `Please check the Virtualizor panel or API credentials.`,
+        { parse_mode: 'Markdown' }
+      );
     }
   });
 
@@ -439,7 +494,7 @@ app.get('/', (req, res) => {
 // ==========================================
 // 5. Background Health Check Loop
 // ==========================================
-function checkBotsHealth() {
+async function checkBotsHealth() {
   const now = Date.now();
 
   botRegistry.forEach((botInfo, botKey) => {
@@ -468,6 +523,103 @@ function checkBotsHealth() {
       }
     }
   });
+
+  // VPS Auto-Restart Logic
+  if (ENABLE_VPS_AUTO_START && VIRTUALIZOR_API_KEY && VIRTUALIZOR_API_PASS && !vpsRestartInFlight) {
+    try {
+      const vpsStatus = await vpsClient.getStatus();
+      
+      if (!vpsStatus.isOnline) {
+        // VPS is offline
+        vpsOfflineCount++;
+        vpsLastOfflineTime = now;
+        
+        console.log(`[VPS Monitor] VPS ${VPS_ID} is offline. Count: ${vpsOfflineCount}/${VPS_OFFLINE_THRESHOLD}`);
+        
+        // Send alert on first detection
+        if (vpsOfflineCount === 1) {
+          const alertMessage =
+            `🖥️ *[ALERT] VPS ${VPS_ID} is OFFLINE*\n\n` +
+            `⏱️ *Detected:* \`${new Date(now).toUTCString()}\`\n` +
+            `📊 *Consecutive Checks:* ${vpsOfflineCount}/${VPS_OFFLINE_THRESHOLD}\n\n` +
+            `_Auto-restart will trigger after ${VPS_OFFLINE_THRESHOLD} offline checks if not started._`;
+          sendTelegramAlert(alertMessage);
+        }
+        
+        // Check if we should trigger auto-restart
+        if (vpsOfflineCount >= VPS_OFFLINE_THRESHOLD) {
+          const timeSinceOffline = now - (vpsLastOfflineTime || now);
+          
+          if (timeSinceOffline >= VPS_RESTART_DELAY_MS) {
+            console.log(`[VPS Monitor] Triggering auto-restart for VPS ${VPS_ID} (offline for ${Math.round(timeSinceOffline / 60000)} minutes)`);
+            await triggerVPSAutoRestart();
+          } else {
+            console.log(`[VPS Monitor] Waiting ${Math.round((VPS_RESTART_DELAY_MS - timeSinceOffline) / 1000)}s before auto-restart...`);
+          }
+        }
+      } else {
+        // VPS is online - reset counter
+        if (vpsOfflineCount > 0) {
+          console.log(`[VPS Monitor] VPS ${VPS_ID} is back online. Resetting offline counter.`);
+          const recoveryMsg =
+            `✅ *[RECOVERY]* VPS ${VPS_ID} is back ONLINE!\n\n` +
+            `🕒 *Timestamp:* \`${new Date(now).toUTCString()}\`\n` +
+            `📊 *Previous Offline Count:* ${vpsOfflineCount}`;
+          sendTelegramAlert(recoveryMsg);
+        }
+        vpsOfflineCount = 0;
+        vpsLastOfflineTime = null;
+        vpsRestartInFlight = false;
+      }
+    } catch (err) {
+      console.error(`[VPS Monitor] Error checking VPS status:`, err.message);
+    }
+  }
+}
+
+async function triggerVPSAutoRestart() {
+  if (vpsRestartInFlight) return;
+  
+  vpsRestartInFlight = true;
+  console.log(`[VPS Monitor] Initiating auto-restart for VPS ${VPS_ID}...`);
+  
+  const restartMessage =
+    `🔄 *[AUTO-RESTART]* VPS ${VPS_ID}\n\n` +
+    `⏱️ *Triggered:* \`${new Date().toUTCString()}\`\n` +
+    `📊 *Reason:* Offline for ${vpsOfflineCount} consecutive checks\n\n` +
+    `_Attempting restart via Virtualizor API..._`;
+  
+  await sendTelegramAlert(restartMessage);
+  
+  try {
+    const result = await vpsClient.restart();
+    
+    if (result?.status === 'success' || result?.data?.vpsid === VPS_ID) {
+      console.log(`[VPS Monitor] Auto-restart command sent successfully for VPS ${VPS_ID}`);
+      const successMsg =
+        `✅ *VPS ${VPS_ID} Restart Initiated*\n\n` +
+        `🕒 *Time:* \`${new Date().toUTCString()}\`\n\n` +
+        `_The VPS should boot up in a few minutes. Use /vps to check status._`;
+      await sendTelegramAlert(successMsg);
+    } else {
+      throw new Error(`Unexpected response: ${JSON.stringify(result)}`);
+    }
+  } catch (err) {
+    console.error(`[VPS Monitor] Auto-restart failed:`, err.message);
+    const errMsg =
+      `❌ *VPS ${VPS_ID} Auto-Restart Failed*\n\n` +
+      `⏱️ *Time:* \`${new Date().toUTCString()}\`\n` +
+      `❌ *Error:* ${escapeMarkdown(err.message)}\n\n` +
+      `_Please check the Virtualizor panel manually._`;
+    await sendTelegramAlert(errMsg);
+  } finally {
+    // Reset after delay to allow restart to complete
+    setTimeout(() => {
+      vpsRestartInFlight = false;
+      vpsOfflineCount = 0;
+      vpsLastOfflineTime = null;
+    }, VPS_RESTART_DELAY_MS * 2);
+  }
 }
 
 let healthCheckInterval = null;
@@ -475,7 +627,11 @@ let server = null;
 
 function startHealthCheck() {
   if (!healthCheckInterval) {
-    healthCheckInterval = setInterval(checkBotsHealth, CHECK_INTERVAL_MS);
+    // Run health check immediately on start, then interval
+    checkBotsHealth().catch(err => console.error('[Health Check] Initial check failed:', err));
+    healthCheckInterval = setInterval(() => {
+      checkBotsHealth().catch(err => console.error('[Health Check] Interval check failed:', err));
+    }, CHECK_INTERVAL_MS);
     console.log(`[Health Check] Background loop scheduled to run every ${CHECK_INTERVAL_MS / 1000}s (Timeout threshold: ${TIMEOUT_THRESHOLD_MS / 1000}s)`);
   }
   return healthCheckInterval;
