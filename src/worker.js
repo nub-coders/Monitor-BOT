@@ -2226,33 +2226,33 @@ async function runVirtualizorCheck(env) {
     if (autoRestart && !state.manual_stop) {
       if (state.gaveUp) {
         // Already exhausted all attempts — stay silent until manual recovery
-        console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} still offline. Max restart attempts already reached. Waiting for manual fix.`);
+        console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} still offline. Max start attempts already reached. Waiting for manual fix.`);
       } else if (state.restartAttempts < maxRestartAttempts) {
-        // Attempt restart
+        // Attempt start
         state.restartAttempts = (state.restartAttempts || 0) + 1;
-        console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} offline — restart attempt ${state.restartAttempts}/${maxRestartAttempts}`);
+        console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} offline — start attempt ${state.restartAttempts}/${maxRestartAttempts}`);
 
         const attemptMsg =
-          `<h2>${tgEmoji('ALERT')} ${tgEmoji('LIGHTNING')} VPS ${env.VPS_ID || '514'} Offline — Restart Attempt ${state.restartAttempts}/${maxRestartAttempts}</h2>\n` +
+          `<h2>${tgEmoji('ALERT')} ${tgEmoji('LIGHTNING')} VPS ${env.VPS_ID || '514'} Offline — Start Attempt ${state.restartAttempts}/${maxRestartAttempts}</h2>\n` +
           `<blockquote>\n` +
           `${tgEmoji('SERVER')} <b>VPS ID:</b> <code>${info.vpsId}</code> (${escapeHtml(info.hostname)})\n` +
           `${tgEmoji('SERVER')} <b>IP:</b> <code>${escapeHtml(info.ip)}</code>\n` +
           `${tgEmoji('WARNING')} <b>Error:</b> <i>${escapeHtml(info.error || 'Server power state 0')}</i>\n` +
-          `${tgEmoji('LIGHTNING')} <b>Action:</b> Dispatching restart to Virtualizor...\n` +
+          `${tgEmoji('LIGHTNING')} <b>Action:</b> Dispatching start to Virtualizor...\n` +
           `${tgEmoji('CLOCK')} <b>Attempt:</b> ${state.restartAttempts} of ${maxRestartAttempts}\n` +
           `</blockquote>\n\n` +
           `<i>Next status check will confirm if the server recovered.</i>`;
 
         try {
-          await client.restart();
+          await client.start();
           if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
             await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID, attemptMsg);
           }
         } catch (e) {
-          console.warn(`[VPS Monitor] Restart attempt ${state.restartAttempts} failed:`, e.message);
+          console.warn(`[VPS Monitor] Start attempt ${state.restartAttempts} failed:`, e.message);
           if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
             await sendTg(env.TELEGRAM_BOT_TOKEN, env.MY_CHAT_ID,
-              `<h2>${tgEmoji('WARNING')} VPS ${env.VPS_ID || '514'} — Restart Attempt ${state.restartAttempts} Failed</h2>\n` +
+              `<h2>${tgEmoji('WARNING')} VPS ${env.VPS_ID || '514'} — Start Attempt ${state.restartAttempts} Failed</h2>\n` +
               `<blockquote>${tgEmoji('WARNING')} <b>Error:</b> <i>${escapeHtml(e.message)}</i></blockquote>`);
           }
         }
@@ -2260,13 +2260,13 @@ async function runVirtualizorCheck(env) {
         // If this was the last attempt, set gaveUp flag
         if (state.restartAttempts >= maxRestartAttempts) {
           state.gaveUp = true;
-          console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} — max restart attempts (${maxRestartAttempts}) reached. Giving up.`);
+          console.log(`[VPS Monitor] VPS ${env.VPS_ID || '514'} — max start attempts (${maxRestartAttempts}) reached. Giving up.`);
           const giveUpMsg =
-            `<h2>${tgEmoji('ALERT')} VPS ${env.VPS_ID || '514'} — Max Restart Attempts Reached</h2>\n` +
+            `<h2>${tgEmoji('ALERT')} VPS ${env.VPS_ID || '514'} — Max Start Attempts Reached</h2>\n` +
             `<blockquote>\n` +
             `${tgEmoji('SERVER')} <b>VPS:</b> <code>${info.vpsId}</code> (${escapeHtml(info.hostname)})\n` +
             `${tgEmoji('WARNING')} <b>Attempts Made:</b> ${state.restartAttempts}/${maxRestartAttempts}\n` +
-            `${tgEmoji('ALERT')} <b>Result:</b> VPS did not recover after all restart attempts\n` +
+            `${tgEmoji('ALERT')} <b>Result:</b> VPS did not recover after all start attempts\n` +
             `</blockquote>\n\n` +
             `<b>⚠️ Manual intervention required.</b> Check the Virtualizor panel directly.`;
           if (env.TELEGRAM_BOT_TOKEN && env.MY_CHAT_ID) {
