@@ -351,7 +351,11 @@ export function renderDashboardHtml(env) {
 
         if (data.isOnline) {
           statusPill.className = 'status-badge online';
-          statusText.textContent = 'ONLINE (Active)';
+          if (data.panelStatus === 'unreachable' || data.verifiedVia === 'direct_reachability_fallback') {
+            statusText.textContent = 'ONLINE (Direct IP Probe)';
+          } else {
+            statusText.textContent = 'ONLINE (Active)';
+          }
         } else {
           statusPill.className = 'status-badge offline';
           statusText.textContent = 'OFFLINE';

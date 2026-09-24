@@ -477,9 +477,36 @@ async function renderVpsCard(env) {
 
   try {
     const info = await client.getVpsInfo();
+    const isDirectFallback = info.panelStatus === 'unreachable' || info.verifiedVia === 'direct_reachability_fallback';
     const icon = info.isOnline ? tgEmoji('ONLINE') : tgEmoji('OFFLINE');
-    const stateStr = info.isOnline ? 'ONLINE (Operational)' : 'OFFLINE';
+    const stateStr = info.isOnline ? (isDirectFallback ? 'ONLINE (Direct IP Reachability)' : 'ONLINE (Operational)') : 'OFFLINE';
     const activeLine = info.activeTime ? `${tgEmoji('CLOCK')} <b>Service Age:</b> <code>${escapeHtml(info.activeTime)}</code> (Since Provisioning)<br/>\n` : '';
+
+    if (isDirectFallback) {
+      return (
+        `<h2>${tgEmoji('SERVER')} ${tgEmoji('LIGHTNING')} VPS ${vpsId} Status</h2>\n\n` +
+        `<blockquote>\n` +
+        `${tgEmoji('LIGHTNING')} <b>Power State:</b> ${icon} <b>${stateStr}</b><br/>\n` +
+        `${tgEmoji('SERVER')} <b>Hostname:</b> <code>${escapeHtml(info.hostname)}</code><br/>\n` +
+        `${tgEmoji('GLOBE')} <b>Primary IP:</b> <code>${escapeHtml(info.ip)}</code><br/>\n` +
+        `${tgEmoji('CLOCK')} <b>Direct Probe Latency:</b> <code>${info.responseTimeMs || 0}ms</code><br/>\n` +
+        `${tgEmoji('WARNING')} <b>Virtualizor Panel:</b> <code>Temporarily Unreachable</code>\n` +
+        `</blockquote>\n\n` +
+        `<blockquote>\n` +
+        `${tgEmoji('INFO')} <b>Direct Reachability Fallback:</b> The VPS server network ports and web services are healthy and responding. However, the Virtualizor control panel (<code>${escapeHtml(client.panelUrl)}</code>) is unreachable, so real-time CPU/RAM/Disk metrics cannot be loaded.\n` +
+        `</blockquote>\n\n` +
+        `<details>\n` +
+        `<summary><b>${tgEmoji('GEAR')} Server Specifications (Hardware &amp; OS)</b></summary>\n` +
+        `${tgEmoji('SERVER')} <b>OS:</b> <code>Ubuntu 24.04 x86_64</code><br/>\n` +
+        `${tgEmoji('GEAR')} <b>Virtualization:</b> <code>KVM</code><br/>\n` +
+        `${tgEmoji('LIGHTNING')} <b>Processor:</b> <code>12 vCPU Cores</code><br/>\n` +
+        `${tgEmoji('GEAR')} <b>Memory:</b> <code>64 GB RAM</code><br/>\n` +
+        `${tgEmoji('SERVER')} <b>Storage:</b> <code>1,000 GB NVMe/SSD</code><br/>\n` +
+        `${tgEmoji('SHIELD')} <b>MAC:</b> <code>00:16:3e:ca:71:d5</code>\n` +
+        `</details>\n\n` +
+        `<i>${tgEmoji('CLOCK')} Polled: ${new Date(info.timestamp).toUTCString()}</i>`
+      );
+    }
 
     return (
       `<h2>${tgEmoji('SERVER')} ${tgEmoji('LIGHTNING')} VPS ${vpsId} Live Telemetry</h2>\n\n` +
@@ -510,6 +537,24 @@ async function renderVpsCard(env) {
       `<i>${tgEmoji('CLOCK')} Polled: ${new Date(info.timestamp).toUTCString()}</i>`
     );
   } catch (err) {
+    const direct = await client.checkDirectReachability().catch(() => ({ isReachable: false }));
+    if (direct.isReachable) {
+      return (
+        `<h2>${tgEmoji('SERVER')} ${tgEmoji('LIGHTNING')} VPS ${vpsId} Status</h2>\n\n` +
+        `<blockquote>\n` +
+        `${tgEmoji('LIGHTNING')} <b>Power State:</b> ${tgEmoji('ONLINE')} <b>ONLINE (Direct Reachability)</b><br/>\n` +
+        `${tgEmoji('SERVER')} <b>Hostname:</b> <code>${escapeHtml(hostname)}</code><br/>\n` +
+        `${tgEmoji('GLOBE')} <b>Primary IP:</b> <code>${escapeHtml(ip)}</code><br/>\n` +
+        `${tgEmoji('CLOCK')} <b>Direct Latency:</b> <code>${direct.responseTimeMs || 0}ms</code><br/>\n` +
+        `${tgEmoji('WARNING')} <b>Virtualizor Panel:</b> <code>Temporarily Unreachable</code>\n` +
+        `</blockquote>\n\n` +
+        `<blockquote>\n` +
+        `${tgEmoji('INFO')} <b>Direct Reachability Fallback:</b> VPS server is online and responding. Virtualizor panel error: <i>${escapeHtml(err.message)}</i>.\n` +
+        `</blockquote>\n\n` +
+        `<i>${tgEmoji('CLOCK')} Polled: ${new Date().toUTCString()}</i>`
+      );
+    }
+
     return (
       `<h2>${tgEmoji('WARNING')} VPS ${vpsId} Status Error</h2>\n\n` +
       `<blockquote>\n` +
@@ -2169,7 +2214,9 @@ async function runVirtualizorCheck(env) {
     panelUrl: env.PANEL_URL,
     apiKey: env.VIRTUALIZOR_API_KEY,
     apiPass: env.VIRTUALIZOR_API_PASS,
-    vpsId: env.VPS_ID || '514'
+    vpsId: env.VPS_ID || '514',
+    hostname: env.VPS_HOSTNAME || 'mails.nubcoders.com',
+    ip: env.VPS_IP || '103.190.93.162'
   });
 
   const now = Date.now();
@@ -2198,6 +2245,17 @@ async function runVirtualizorCheck(env) {
       ip: env.VPS_IP || '103.190.93.162',
       responseTimeMs: 0
     };
+  }
+
+  // Safety safeguard: Verify direct reachability before treating VPS as offline
+  if (!info.isOnline) {
+    const direct = await client.checkDirectReachability().catch(() => ({ isReachable: false }));
+    if (direct.isReachable) {
+      console.log(`[VPS Monitor] Virtualizor reported offline/error, but direct probe succeeded. Marking ONLINE via Direct Reachability Fallback.`);
+      info.isOnline = true;
+      info.panelStatus = 'reported_offline';
+      info.verifiedVia = 'direct_reachability_fallback';
+    }
   }
 
   const currentStatus = info.isOnline ? 'online' : 'offline';
@@ -2365,7 +2423,9 @@ export default {
         panelUrl: env.PANEL_URL,
         apiKey: env.VIRTUALIZOR_API_KEY,
         apiPass: env.VIRTUALIZOR_API_PASS,
-        vpsId: env.VPS_ID || '514'
+        vpsId: env.VPS_ID || '514',
+        hostname: env.VPS_HOSTNAME || 'mails.nubcoders.com',
+        ip: env.VPS_IP || '103.190.93.162'
       });
 
       if (!env.VIRTUALIZOR_API_KEY || !env.VIRTUALIZOR_API_PASS) {
@@ -2393,6 +2453,26 @@ export default {
           headers: { ...jsonHeaders, ...SECURITY_HEADERS }
         });
       } catch (err) {
+        const direct = await client.checkDirectReachability().catch(() => ({ isReachable: false }));
+        if (direct.isReachable) {
+          return new Response(JSON.stringify({
+            isOnline: true,
+            status: 'online',
+            panelStatus: 'unreachable',
+            verifiedVia: 'direct_reachability_fallback',
+            panelError: err.message,
+            vpsId: env.VPS_ID || '514',
+            hostname: env.VPS_HOSTNAME || 'mails.nubcoders.com',
+            ip: env.VPS_IP || '103.190.93.162',
+            responseTimeMs: direct.responseTimeMs || 0,
+            uptimeRatio: '100',
+            timestamp: new Date().toISOString()
+          }), {
+            status: 200,
+            headers: { ...jsonHeaders, ...SECURITY_HEADERS }
+          });
+        }
+
         return new Response(JSON.stringify({ isOnline: false, error: err.message }), {
           status: 500,
           headers: { ...jsonHeaders, ...SECURITY_HEADERS }

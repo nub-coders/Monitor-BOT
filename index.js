@@ -48,13 +48,17 @@ const VPS_MAX_RESTART_ATTEMPTS = parseInt(process.env.VPS_MAX_RESTART_ATTEMPTS, 
 // Virtualizor Configuration
 const PANEL_URL = process.env.PANEL_URL || 'https://arjun.defaultserverdns.com:4083';
 const VPS_ID = process.env.VPS_ID || '514';
+const VPS_HOSTNAME = process.env.VPS_HOSTNAME || 'mails.nubcoders.com';
+const VPS_IP = process.env.VPS_IP || '103.190.93.162';
 const VIRTUALIZOR_API_KEY = process.env.VIRTUALIZOR_API_KEY || '';
 const VIRTUALIZOR_API_PASS = process.env.VIRTUALIZOR_API_PASS || '';
 const vpsClient = new VirtualizorClient({
   panelUrl: PANEL_URL,
   apiKey: VIRTUALIZOR_API_KEY,
   apiPass: VIRTUALIZOR_API_PASS,
-  vpsId: VPS_ID
+  vpsId: VPS_ID,
+  hostname: VPS_HOSTNAME,
+  ip: VPS_IP
 });
 
 // Prioritize explicit custom domain or BASE_URL over Render's default *.onrender.com URL
@@ -213,17 +217,31 @@ if (TELEGRAM_BOT_TOKEN) {
       const info = await vpsClient.getVpsInfo();
       const icon = info.isOnline ? '🟢' : '🔴';
       const autoStartStatus = ENABLE_VPS_AUTO_START ? '✅ Enabled' : '❌ Disabled';
-      const msg =
+
+      let msg =
         `🖥️ *VPS ${VPS_ID} Live Telemetry*\n\n` +
         `• *Status:* ${icon} *${info.isOnline ? 'ONLINE' : 'OFFLINE'}*\n` +
         `• *Hostname:* \`${info.hostname}\`\n` +
-        `• *IP:* \`${info.ip}\`\n` +
-        `• *CPU Usage:* \`${info.cpuUsagePercent.toFixed(1)}%\` (${info.cores} cores)\n` +
-        `• *RAM:* \`${(info.ramUsedMb / 1024).toFixed(1)} GB / ${(info.ramTotalMb / 1024).toFixed(0)} GB\` (${info.ramUsagePercent}%)\n` +
-        `• *Storage:* \`${info.diskUsedGb} GB / ${info.diskTotalGb} GB\`\n` +
-        `• *Bandwidth:* \`${info.bandwidthUsedGb.toFixed(2)} GB\`\n` +
-        `• *Latency:* \`${info.responseTimeMs}ms\`\n\n` +
-        `_Auto-start: ${autoStartStatus}_`;
+        `• *IP:* \`${info.ip}\`\n`;
+
+      if (info.panelStatus === 'unreachable' || info.verifiedVia === 'direct_reachability_fallback') {
+        const methodDesc = info.fallbackDetail?.method ? ` (${info.fallbackDetail.method.toUpperCase()} port ${info.fallbackDetail.port || 'HTTP'})` : '';
+        msg +=
+          `• *Verification:* 🟡 *Direct Reachability Fallback*${methodDesc}\n` +
+          `• *Direct Latency:* \`${info.responseTimeMs}ms\`\n` +
+          `• *Virtualizor Panel:* 🔴 *Unreachable* (\`${escapeMarkdown(PANEL_URL)}\`)\n\n` +
+          `⚠️ *Notice:* The VPS and its network ports are healthy and responding. Virtualizor panel is temporarily unreachable, so real-time CPU/RAM/Disk metrics are unavailable.\n\n` +
+          `_Auto-start: ${autoStartStatus}_`;
+      } else {
+        msg +=
+          `• *CPU Usage:* \`${info.cpuUsagePercent.toFixed(1)}%\` (${info.cores} cores)\n` +
+          `• *RAM:* \`${(info.ramUsedMb / 1024).toFixed(1)} GB / ${(info.ramTotalMb / 1024).toFixed(0)} GB\` (${info.ramUsagePercent}%)\n` +
+          `• *Storage:* \`${info.diskUsedGb} GB / ${info.diskTotalGb} GB\`\n` +
+          `• *Bandwidth:* \`${info.bandwidthUsedGb.toFixed(2)} GB\`\n` +
+          `• *Latency:* \`${info.responseTimeMs}ms\`\n\n` +
+          `_Auto-start: ${autoStartStatus}_`;
+      }
+
       await ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (err) {
       await ctx.reply(`❌ *VPS Status Error:* ${escapeMarkdown(err.message)}`, { parse_mode: 'Markdown' });
@@ -528,12 +546,19 @@ async function checkBotsHealth() {
       const vpsStatus = await vpsClient.getStatus();
 
       if (!vpsStatus.isOnline) {
+        // Guard: Verify direct reachability before triggering restart
+        const direct = await vpsClient.checkDirectReachability();
+        if (direct.isReachable) {
+          console.warn(`[VPS Monitor] Virtualizor reported offline/unreachable, but VPS direct reachability is ACTIVE (${direct.method || 'direct'}). Suppressing auto-restart to protect running server.`);
+          return;
+        }
+
         if (vpsGaveUp) {
           // Already exhausted all attempts — stay silent
           console.log(`[VPS Monitor] VPS ${VPS_ID} still offline. Max attempts reached. Waiting for manual fix.`);
         } else if (vpsRestartAttempts < VPS_MAX_RESTART_ATTEMPTS) {
           vpsRestartAttempts++;
-          console.log(`[VPS Monitor] VPS ${VPS_ID} offline — restart attempt ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS}`);
+          console.log(`[VPS Monitor] VPS ${VPS_ID} confirmed offline via both panel and direct probe — restart attempt ${vpsRestartAttempts}/${VPS_MAX_RESTART_ATTEMPTS}`);
           await triggerVPSAutoRestart();
 
           if (vpsRestartAttempts >= VPS_MAX_RESTART_ATTEMPTS) {
@@ -547,7 +572,11 @@ async function checkBotsHealth() {
           }
         }
       } else {
-        // VPS is online — reset retry state
+        // VPS is online (either via Virtualizor or direct reachability fallback)
+        if (vpsStatus.panelStatus === 'unreachable') {
+          console.log(`[VPS Monitor] VPS ${VPS_ID} is ONLINE via direct reachability (Virtualizor panel unreachable).`);
+        }
+
         if (vpsRestartAttempts > 0 || vpsGaveUp) {
           console.log(`[VPS Monitor] VPS ${VPS_ID} is back online. Resetting restart state.`);
           sendTelegramAlert(

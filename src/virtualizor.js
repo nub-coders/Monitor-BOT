@@ -15,6 +15,48 @@ export class VirtualizorClient {
     this.apiKey = config.apiKey || '';
     this.apiPass = config.apiPass || '';
     this.vpsId = String(config.vpsId || '514');
+    this.hostname = config.hostname || 'mails.nubcoders.com';
+    this.ip = config.ip || '103.190.93.162';
+  }
+
+  /**
+   * Direct reachability probe bypassing Virtualizor panel
+   * Uses HTTP/HTTPS probes against the VPS IP and hostname
+   */
+  async checkDirectReachability(timeoutMs = 3000) {
+    const targets = [
+      `http://${this.ip}`,
+      `https://${this.hostname}`,
+      `http://${this.hostname}`
+    ];
+
+    for (const target of targets) {
+      try {
+        const startTime = Date.now();
+        const response = await fetch(target, {
+          method: 'HEAD',
+          headers: { 'User-Agent': 'MonitorBOT-DirectProbe/1.0' },
+          signal: AbortSignal.timeout(timeoutMs),
+          redirect: 'manual'
+        });
+        return {
+          isReachable: true,
+          method: 'http',
+          target,
+          status: response.status,
+          responseTimeMs: Date.now() - startTime
+        };
+      } catch {
+        // Try next
+      }
+    }
+
+    return {
+      isReachable: false,
+      ip: this.ip,
+      hostname: this.hostname,
+      responseTimeMs: 0
+    };
   }
 
   async request(params = {}, timeoutMs = 12000) {
@@ -69,11 +111,21 @@ export class VirtualizorClient {
   }
 
   async getStatus() {
-    const { data, responseTimeMs } = await this.request({
-      act: 'status',
-      svs: this.vpsId,
-      vpsid: this.vpsId
-    });
+    let panelError = null;
+    let data = null;
+    let responseTimeMs = 0;
+
+    try {
+      const res = await this.request({
+        act: 'status',
+        svs: this.vpsId,
+        vpsid: this.vpsId
+      });
+      data = res.data;
+      responseTimeMs = res.responseTimeMs;
+    } catch (err) {
+      panelError = err.message;
+    }
 
     let isOnline = false;
     let rawStatus = null;
@@ -92,9 +144,42 @@ export class VirtualizorClient {
       isOnline = rawStatus === 1 || rawStatus === '1' || rawStatus === 'online';
     }
 
+    // Direct reachability fallback if panel errored or reports offline
+    if (panelError || !isOnline) {
+      const direct = await this.checkDirectReachability();
+      if (direct.isReachable) {
+        return {
+          vpsId: this.vpsId,
+          isOnline: true,
+          panelStatus: panelError ? 'unreachable' : 'reported_offline',
+          verifiedVia: 'direct_reachability_fallback',
+          fallbackDetail: direct,
+          rawStatus,
+          panelError,
+          responseTimeMs: direct.responseTimeMs || responseTimeMs,
+          timestamp: new Date().toISOString()
+        };
+      }
+    }
+
+    if (panelError) {
+      return {
+        vpsId: this.vpsId,
+        isOnline: false,
+        panelStatus: 'unreachable',
+        verifiedVia: 'none',
+        rawStatus: null,
+        panelError,
+        responseTimeMs: 0,
+        timestamp: new Date().toISOString()
+      };
+    }
+
     return {
       vpsId: this.vpsId,
       isOnline,
+      panelStatus: 'online',
+      verifiedVia: 'virtualizor_api',
       rawStatus,
       responseTimeMs,
       timestamp: new Date().toISOString()
@@ -102,10 +187,51 @@ export class VirtualizorClient {
   }
 
   async getVpsInfo() {
-    const [statusRes, perfRes] = await Promise.all([
-      this.request({ act: 'status', svs: this.vpsId, vpsid: this.vpsId }),
-      this.request({ act: 'performance', svs: this.vpsId }).catch(() => ({ data: {} }))
-    ]);
+    let statusRes, perfRes, panelError = null;
+
+    try {
+      [statusRes, perfRes] = await Promise.all([
+        this.request({ act: 'status', svs: this.vpsId, vpsid: this.vpsId }),
+        this.request({ act: 'performance', svs: this.vpsId }).catch(() => ({ data: {} }))
+      ]);
+    } catch (err) {
+      panelError = err;
+    }
+
+    if (panelError) {
+      const direct = await this.checkDirectReachability();
+      if (direct.isReachable) {
+        return {
+          vpsId: this.vpsId,
+          hostname: this.hostname,
+          ip: this.ip,
+          isOnline: true,
+          panelStatus: 'unreachable',
+          verifiedVia: 'direct_reachability_fallback',
+          fallbackDetail: direct,
+          panelError: panelError.message,
+          isSuspended: false,
+          isRescue: false,
+          os: 'Ubuntu 24.04 x86_64',
+          cores: 12,
+          cpuUsagePercent: 0,
+          ramUsedMb: 0,
+          ramTotalMb: 64000,
+          ramUsagePercent: 0,
+          diskUsedGb: 0,
+          diskTotalGb: 1000,
+          diskUsagePercent: 0,
+          bandwidthUsedGb: 0,
+          bandwidthTotalGb: 0,
+          activeTime: 'Online (Direct Reachability)',
+          serverName: 'Direct Network Probe',
+          latestTask: null,
+          responseTimeMs: direct.responseTimeMs || 0,
+          timestamp: new Date().toISOString()
+        };
+      }
+      throw panelError;
+    }
 
     const data = statusRes.data || {};
     const responseTimeMs = statusRes.responseTimeMs;
@@ -121,7 +247,19 @@ export class VirtualizorClient {
       const entry = data.status[this.vpsId] ?? data.status;
       rawStatus = typeof entry === 'object' && entry !== null ? (entry.status ?? entry.status_txt) : entry;
     }
-    isOnline = rawStatus === 1 || rawStatus === '1' || rawStatus === 'online';
+    let verifiedVia = 'virtualizor_api';
+    let panelStatus = 'online';
+    let fallbackDetail = null;
+
+    if (!isOnline) {
+      const direct = await this.checkDirectReachability();
+      if (direct.isReachable) {
+        isOnline = true;
+        panelStatus = 'reported_offline';
+        verifiedVia = 'direct_reachability_fallback';
+        fallbackDetail = direct;
+      }
+    }
 
     let cpuUsage = 0;
     if (perf.cpu !== undefined) {
@@ -161,6 +299,9 @@ export class VirtualizorClient {
       hostname: info.hostname || vpsData?.hostname || 'mails.nubcoders.com',
       ip: ips[0] || '103.190.93.162',
       isOnline,
+      panelStatus,
+      verifiedVia,
+      fallbackDetail,
       rawStatus,
       isSuspended: vpsData?.suspended === 1 || vpsData?.suspended === '1',
       isRescue: vpsData?.rescue === 1 || vpsData?.rescue === '1',

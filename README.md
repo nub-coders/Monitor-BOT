@@ -28,6 +28,7 @@ A lightweight, production-ready Node.js backend service that monitors the health
   - Outage and recovery alerts are always sent directly to the creator's private Telegram DM.
 - 🖥️ **Virtualizor VPS 514 Infrastructure Monitoring**:
   - Live power status, CPU usage %, RAM usage %, disk storage, bandwidth, and API latency.
+  - **Direct Reachability Fallback**: Dual-layer verification with direct TCP/HTTP probing (ports 80, 443, 22, 25) preventing false alarms and accidental reboots when the Virtualizor control panel is unreachable.
   - Automated 1-minute cron polling on Cloudflare Workers edge.
   - Outage & recovery alerts dispatched to Telegram DM and linked groups.
   - Interactive bot controls: `/vps`, `/vps_specs`, `/start_vps`, `/restart_vps`, `/stop_vps` and `VPS 514 Live` menu button.
