@@ -2247,17 +2247,8 @@ async function runVirtualizorCheck(env) {
     };
   }
 
-  // Safety safeguard: Verify direct reachability before treating VPS as offline
-  if (!info.isOnline) {
-    const direct = await client.checkDirectReachability().catch(() => ({ isReachable: false }));
-    if (direct.isReachable) {
-      console.log(`[VPS Monitor] Virtualizor reported offline/error, but direct probe succeeded. Marking ONLINE via Direct Reachability Fallback.`);
-      info.isOnline = true;
-      info.panelStatus = 'reported_offline';
-      info.verifiedVia = 'direct_reachability_fallback';
-    }
-  }
-
+  // The Virtualizor API is authoritative whenever it responds. Direct IP
+  // reachability is used only by the client when the API request fails.
   const currentStatus = info.isOnline ? 'online' : 'offline';
   const prevStatus = state.lastStatus || 'unknown';
   const autoRestart = state.auto_restart === true || env.AUTO_RESTART_ON_FAILURE === 'true';

@@ -144,8 +144,9 @@ export class VirtualizorClient {
       isOnline = rawStatus === 1 || rawStatus === '1' || rawStatus === 'online';
     }
 
-    // Direct reachability fallback if panel errored or reports offline
-    if (panelError || !isOnline) {
+    // Use direct reachability only when the Virtualizor API could not be contacted.
+    // An API response reporting offline is authoritative and must not be overridden.
+    if (panelError) {
       const direct = await this.checkDirectReachability();
       if (direct.isReachable) {
         return {
@@ -247,19 +248,14 @@ export class VirtualizorClient {
       const entry = data.status[this.vpsId] ?? data.status;
       rawStatus = typeof entry === 'object' && entry !== null ? (entry.status ?? entry.status_txt) : entry;
     }
+    isOnline = rawStatus === 1 || rawStatus === '1' || rawStatus === 'online';
+
     let verifiedVia = 'virtualizor_api';
     let panelStatus = 'online';
     let fallbackDetail = null;
 
-    if (!isOnline) {
-      const direct = await this.checkDirectReachability();
-      if (direct.isReachable) {
-        isOnline = true;
-        panelStatus = 'reported_offline';
-        verifiedVia = 'direct_reachability_fallback';
-        fallbackDetail = direct;
-      }
-    }
+    // The API response is authoritative. Direct reachability fallback is handled
+    // only when the API request itself fails above.
 
     let cpuUsage = 0;
     if (perf.cpu !== undefined) {
